@@ -1,0 +1,182 @@
+import time
+
+import mujoco.viewer
+import mujoco
+import numpy as np
+from legged_gym import LEGGED_GYM_ROOT_DIR
+import torch
+import yaml
+import matplotlib.pyplot as plt
+from collections import deque
+
+def get_gravity_orientation(quaternion):
+    qw = quaternion[0]
+    qx = quaternion[1]
+    qy = quaternion[2]
+    qz = quaternion[3]
+
+    gravity_orientation = np.zeros(3)
+
+    gravity_orientation[0] = 2 * (-qz * qx + qw * qy)
+    gravity_orientation[1] = -2 * (qz * qy + qw * qx)
+    gravity_orientation[2] = 1 - 2 * (qw * qw + qz * qz)
+
+    return gravity_orientation
+
+
+def pd_control(target_q, q, kp, target_dq, dq, kd):
+    """Calculates torques from position commands"""
+    return (target_q - q) * kp + (target_dq - dq) * kd
+
+def limit_q_values(q, q_range):
+    limited_q = []
+
+    for i in range(len(q)):
+        min_val, max_val = q_range[i]
+        if q[i] < min_val:
+            limited_q.append(min_val)
+        elif q[i] > max_val:
+            limited_q.append(max_val)
+        else:
+            limited_q.append(q[i])
+    return limited_q
+
+
+if __name__ == "__main__":
+    # get config file name from command line
+    import argparse
+    mujoco_to_isaaclab_indices = [
+    # 0, 3, 6, 9, 11, 15, 1, 4, 7, 10, 12, 16, 2, 5, 8, 13, 14
+    0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28
+    ]
+    isaaclab_to_mujoco_indices = [
+        0, 3, 6, 9, 13, 17, 1, 4, 7, 10, 14, 18, 2, 5, 8, 11, 15, 19, 21, 23, 25, 27, 12, 16, 20, 22, 24, 26, 28
+        # 0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 4, 10, 15, 16, 5, 11
+    ]
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_file", type=str, help="config file name in the config folder")
+    args = parser.parse_args()
+    config_file = args.config_file
+    with open(f"{LEGGED_GYM_ROOT_DIR}/deploy/deploy_mujoco/configs/{config_file}", "r") as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+        policy_path = config["policy_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
+        xml_path = config["xml_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
+
+        simulation_duration = config["simulation_duration"]
+        simulation_dt = config["simulation_dt"]
+        control_decimation = config["control_decimation"]
+
+        kps = np.array(config["kps"]+config['arm_waist_kps'], dtype=np.float32)
+        kds = np.array(config["kds"]+config['arm_waist_kds'], dtype=np.float32)
+
+        default_angles = np.array(config["default_angles"]+config["arm_waist_target"], dtype=np.float32)
+
+        ang_vel_scale = config["ang_vel_scale"]
+        dof_pos_scale = config["dof_pos_scale"]
+        dof_vel_scale = config["dof_vel_scale"]
+        action_scale = config["action_scale"]
+        cmd_scale = np.array(config["cmd_scale"], dtype=np.float32)
+
+        num_actions = config["num_actions"]
+        num_obs = config["num_obs"]
+        
+        cmd = np.array(config["cmd_init"], dtype=np.float32)
+
+    # define context variables
+    action = np.zeros(num_actions, dtype=np.float32)
+    target_dof_pos = default_angles.copy()
+    obs = np.zeros(num_obs, dtype=np.float32)
+
+    counter = 0
+
+    # Load robot model
+    m = mujoco.MjModel.from_xml_path(xml_path)
+    d = mujoco.MjData(m)
+    q_range = [m.jnt_range[i + 1].tolist() for i in range(m.nu)]
+    m.opt.timestep = simulation_dt
+
+    # load policy
+    policy = torch.jit.load(policy_path)
+    d.qpos[7:] = default_angles.copy()
+    mujoco.mj_forward(m, d)
+    target_dof_pos_history = deque(maxlen=10000)
+    dof_pos_history = deque(maxlen=10000)
+
+    with mujoco.viewer.launch_passive(m, d) as viewer:
+        # Close the viewer automatically after simulation_duration wall-seconds.
+        start = time.time()
+        while viewer.is_running() and time.time() - start < simulation_duration:
+            step_start = time.time()
+            
+            target_dof_pos_history.append(target_dof_pos.copy())
+            dof_pos_history.append(d.qpos[7:].copy())
+            # Apply control signal here.
+            tau = pd_control(target_dof_pos, d.qpos[7:], kps, np.zeros_like(kds), d.qvel[6:], kds)
+            d.ctrl[:] = tau
+            # mj_step can be replaced with code that also evaluates
+            # a policy and applies a control signal before stepping the physics.
+            mujoco.mj_step(m, d)
+
+            counter += 1
+            if counter % control_decimation == 0:
+                # Apply control signal here.
+
+                # create observation
+                qj = d.qpos[7:]
+                dqj = d.qvel[6:]
+                quat = d.qpos[3:7]
+                omega = d.qvel[3:6]
+
+                qj = (qj - default_angles) * dof_pos_scale
+                dqj = dqj * dof_vel_scale
+                gravity_orientation = get_gravity_orientation(quat)
+                omega = omega * ang_vel_scale
+
+                period = 0.8
+                count = counter * simulation_dt
+                phase = count % period / period
+                sin_phase = np.sin(2 * np.pi * phase)
+                cos_phase = np.cos(2 * np.pi * phase)
+
+                obs[:3] = omega # y0-0n
+                obs[3:6] = gravity_orientation
+                obs[6:9] = cmd * cmd_scale
+                
+                obs[9 : 9 + num_actions] = qj[mujoco_to_isaaclab_indices]
+                obs[9 + num_actions : 9 + 2 * num_actions] = dqj[mujoco_to_isaaclab_indices]
+                obs[9 + 2 * num_actions : 9 + 3 * num_actions] = action
+                obs[9 + 3 * num_actions : 9 + 3 * num_actions + 2] = np.array([sin_phase, cos_phase])
+                obs_tensor = torch.from_numpy(obs).unsqueeze(0)
+                # policy inference
+                action = policy(obs_tensor).detach().numpy().squeeze()
+                # transform action to target_dof_pos
+                target_dof_pos = action[isaaclab_to_mujoco_indices] * action_scale + default_angles
+
+            # Pick up changes to the physics state, apply perturbations, update options from GUI.
+            viewer.sync()
+
+            # Rudimentary time keeping, will drift relative to wall clock.
+            time_until_next_step = m.opt.timestep - (time.time() - step_start)
+            if time_until_next_step > 0:
+                time.sleep(time_until_next_step)
+     
+    dof_pos_profile = np.transpose(np.array(dof_pos_history)[:,:], (1,0))
+    target_dof_pos_profile = np.transpose(np.array(target_dof_pos_history)[:,:], (1,0))
+    
+    fig, axes = plt.subplots(5, 6, figsize=(40, 30))  # 전체 크기 조정
+    plt.subplots_adjust(hspace=0.4, wspace=0.3)  # 서브플롯 간 간격 조정
+
+    for idx, (target_p, p) in enumerate(zip(target_dof_pos_profile, dof_pos_profile)):
+        ax = axes[idx // 6, idx % 6]  # 5x6 그리드의 위치 설정
+        ax.set_ylim((-30, 30))
+        ax.set_xticks(np.arange(0, p.shape[0], 500))  # X축 간격 설정 ()
+        ax.plot(p * 180 / np.pi, label='Actual')
+        ax.plot(target_p * 180 / np.pi, label='Target')
+        ax.set_title(f'Joint {idx + 1}')
+        ax.legend()
+
+    plt.tight_layout()  # 자동 레이아웃 조정
+    plt.savefig("mujoco_plot")
+    # plt.show()
+            
