@@ -6,7 +6,8 @@ import numpy as np
 from legged_gym import LEGGED_GYM_ROOT_DIR
 import torch
 import yaml
-
+import matplotlib.pyplot as plt
+from collections import deque
 
 def get_gravity_orientation(quaternion):
     qw = quaternion[0]
@@ -72,15 +73,22 @@ if __name__ == "__main__":
     m = mujoco.MjModel.from_xml_path(xml_path)
     d = mujoco.MjData(m)
     m.opt.timestep = simulation_dt
+    target_dof_pos_history = deque()
+    dof_pos_history = deque()
 
     # load policy
     policy = torch.jit.load(policy_path)
+    
 
     with mujoco.viewer.launch_passive(m, d) as viewer:
         # Close the viewer automatically after simulation_duration wall-seconds.
         start = time.time()
         while viewer.is_running() and time.time() - start < simulation_duration:
             step_start = time.time()
+            
+            target_dof_pos_history.append(target_dof_pos.copy())
+            dof_pos_history.append(d.qpos[7:].copy())
+
             tau = pd_control(target_dof_pos, d.qpos[7:], kps, np.zeros_like(kds), d.qvel[6:], kds)
             d.ctrl[:] = tau
             # mj_step can be replaced with code that also evaluates
@@ -120,6 +128,7 @@ if __name__ == "__main__":
                 action = policy(obs_tensor).detach().numpy().squeeze()
                 # transform action to target_dof_pos
                 target_dof_pos = action * action_scale + default_angles
+                
 
             # Pick up changes to the physics state, apply perturbations, update options from GUI.
             viewer.sync()
@@ -128,3 +137,21 @@ if __name__ == "__main__":
             time_until_next_step = m.opt.timestep - (time.time() - step_start)
             if time_until_next_step > 0:
                 time.sleep(time_until_next_step)
+
+    dof_pos_profile = np.transpose(np.array(dof_pos_history)[:,:], (1,0))
+    target_dof_pos_profile = np.transpose(np.array(target_dof_pos_history)[:,:], (1,0))
+    
+    fig, axes = plt.subplots(5, 6, figsize=(40, 30))  # 전체 크기 조정
+    plt.subplots_adjust(hspace=0.4, wspace=0.3)  # 서브플롯 간 간격 조정
+
+    for idx, (target_p, p) in enumerate(zip(target_dof_pos_profile, dof_pos_profile)):
+        ax = axes[idx // 6, idx % 6]  # 5x6 그리드의 위치 설정
+        ax.set_ylim((-30, 30))
+        ax.set_xticks(np.arange(0, p.shape[0], 500),np.arange(0, p.shape[0]/500, 1))  # X축 간격 설정 ()
+        ax.plot(p * 180 / np.pi, label='Actual')
+        ax.plot(target_p * 180 / np.pi, label='Target')
+        ax.set_title(f'Joint {idx + 1}')
+        ax.legend()
+
+    plt.tight_layout()  # 자동 레이아웃 조정
+    plt.savefig("mujoco_plot")

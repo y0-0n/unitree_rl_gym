@@ -1,6 +1,5 @@
 # 
-# policy_path: "{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/g1/motion.pt"
-policy_path: "{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/g1/policy_stand.pt" # y0-0n : trained policy
+policy_path: "{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/g1/stand_policy.pt" # y0-0n : trained policy
 xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/scene_29dof.xml"
 
 # Total simulation time
@@ -12,6 +11,19 @@ control_decimation: 10
 
 kps: [100, 100, 100, 150, 40, 40, 100, 100, 100, 150, 40, 40]
 kds: [2, 2, 2, 4, 2, 2, 2, 2, 2, 4, 2, 2]
+
+init_angles: [0.8539,  0.0026, -0.0219, -0.5200,
+          5.7488e-01, -1.4046e-01,  1.0274e-03, -2.1038e-04, -5.4188e-01, 1.0358e-01,
+          -5.2558e-01,  7.8469e-02,  8.3221e-02,  4.9121e-01, 7.5621e-02, -2.9229e-02,
+          -1.3908e-02, -1.3627e-02, -1.1454e-01,
+          -2.5529e-01,  2.0068e-01, -3.3256e-01,  5.5452e-01,-2.9860e-16, -5.1404e-19, -1.1986e-19,
+          5.2707e-01, -1.9586e-02, -3.0400e-01, 1.1011e+00,  3.3827e-16, -3.0702e-19,  3.1789e-19]
+init_angle_vels: [ 1.2110e-16,  2.5169e-17,  4.6695e-18, -1.8492e-17,  6.1353e-18, -4.8312e-16,
+          1.2480e-16,  2.3851e-17,  1.2023e-17, -2.6086e-17, 3.4553e-17,  2.4372e-16,
+          4.5873e-18,  2.6973e-17,  1.5749e-16,
+         -5.9318e-17, -4.2146e-17,  5.3377e-17,  1.0657e-16,  3.2598e-16, -2.5702e-16, -5.9928e-17,
+         -3.7106e-17,  6.6511e-17, -1.1563e-16,  3.1470e-17,  4.6551e-16, -1.5351e-16,  1.5895e-16]
+
 
 default_angles: [-0.1,  0.0,  0.0,  0.3, -0.2, 0.0, 
                   -0.1,  0.0,  0.0,  0.3, -0.2, 0.0]
@@ -42,4 +54,4 @@ cmd_scale: [2.0, 2.0, 0.25]
 num_actions: 29
 num_obs: 98
 
-cmd_init: [0.5, 0, 0]
+cmd_init: [1.0, 0, 0]

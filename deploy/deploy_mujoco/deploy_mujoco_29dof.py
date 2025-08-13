@@ -29,16 +29,15 @@ def pd_control(target_q, q, kp, target_dq, dq, kd):
     return (target_q - q) * kp + (target_dq - dq) * kd
 
 def limit_q_values(q, q_range):
-    limited_q = []
+    limited_q = deque()
 
     for i in range(len(q)):
         min_val, max_val = q_range[i]
-        if q[i] < min_val:
-            limited_q.append(min_val)
-        elif q[i] > max_val:
-            limited_q.append(max_val)
-        else:
-            limited_q.append(q[i])
+        # Limit the joint position to the range
+        # If the joint position is less than the minimum value, set it to the minimum value
+        # If the joint position is greater than the maximum value, set it to the maximum value
+        # Otherwise, keep it as is
+        limited_q = np.clip(q, min_val, max_val)
     return limited_q
 
 
@@ -71,6 +70,8 @@ if __name__ == "__main__":
         kds = np.array(config["kds"]+config['arm_waist_kds'], dtype=np.float32)
 
         default_angles = np.array(config["default_angles"]+config["arm_waist_target"], dtype=np.float32)
+        init_angles = np.array(config["init_angles"], dtype=np.float32)
+        init_angle_vels = np.array(config["init_angle_vels"], dtype=np.float32)
 
         ang_vel_scale = config["ang_vel_scale"]
         dof_pos_scale = config["dof_pos_scale"]
@@ -98,10 +99,15 @@ if __name__ == "__main__":
 
     # load policy
     policy = torch.jit.load(policy_path)
+    d.qpos[2] = 0.7695
+    # d.qpos[3:] = init_angles.copy() 
+    # d.qvel[6:] = init_angle_vels.copy()
     d.qpos[7:] = default_angles.copy()
     mujoco.mj_forward(m, d)
     target_dof_pos_history = deque(maxlen=10000)
     dof_pos_history = deque(maxlen=10000)
+    torque_history = deque(maxlen=10000)
+    x = deque(maxlen=10000)
 
     with mujoco.viewer.launch_passive(m, d) as viewer:
         # Close the viewer automatically after simulation_duration wall-seconds.
@@ -112,8 +118,10 @@ if __name__ == "__main__":
             target_dof_pos_history.append(target_dof_pos.copy())
             dof_pos_history.append(d.qpos[7:].copy())
             # Apply control signal here.
+            # tau = pd_control(target_dof_pos, d.qpos[7:], kps, np.zeros_like(kds), d.qvel[6:], kds)
             tau = pd_control(target_dof_pos, d.qpos[7:], kps, np.zeros_like(kds), d.qvel[6:], kds)
             d.ctrl[:] = tau
+            torque_history.append(tau.copy())
             # mj_step can be replaced with code that also evaluates
             # a policy and applies a control signal before stepping the physics.
             mujoco.mj_step(m, d)
@@ -133,7 +141,7 @@ if __name__ == "__main__":
                 gravity_orientation = get_gravity_orientation(quat)
                 omega = omega * ang_vel_scale
 
-                period = 0.8
+                period = 4.0
                 count = counter * simulation_dt
                 phase = count % period / period
                 sin_phase = np.sin(2 * np.pi * phase)
@@ -153,6 +161,8 @@ if __name__ == "__main__":
                 # transform action to target_dof_pos
                 target_dof_pos = action[isaaclab_to_mujoco_indices] * action_scale + default_angles
 
+            x.append(d.sensordata[15:18].tolist())
+
             # Pick up changes to the physics state, apply perturbations, update options from GUI.
             viewer.sync()
 
@@ -163,20 +173,44 @@ if __name__ == "__main__":
      
     dof_pos_profile = np.transpose(np.array(dof_pos_history)[:,:], (1,0))
     target_dof_pos_profile = np.transpose(np.array(target_dof_pos_history)[:,:], (1,0))
+    torque_profile = np.transpose(np.array(torque_history)[:,:], (1,0))
     
-    fig, axes = plt.subplots(5, 6, figsize=(40, 30))  # 전체 크기 조정
-    plt.subplots_adjust(hspace=0.4, wspace=0.3)  # 서브플롯 간 간격 조정
+    # fig, axes = plt.subplots(5, 6, figsize=(40, 30))  # 전체 크기 조정
+    # plt.subplots_adjust(hspace=0.4, wspace=0.3)  # 서브플롯 간 간격 조정
 
-    for idx, (target_p, p) in enumerate(zip(target_dof_pos_profile, dof_pos_profile)):
-        ax = axes[idx // 6, idx % 6]  # 5x6 그리드의 위치 설정
-        ax.set_ylim((-30, 30))
-        ax.set_xticks(np.arange(0, p.shape[0], 500))  # X축 간격 설정 ()
-        ax.plot(p * 180 / np.pi, label='Actual')
-        ax.plot(target_p * 180 / np.pi, label='Target')
-        ax.set_title(f'Joint {idx + 1}')
-        ax.legend()
-
+    # for idx, (target_p, p) in enumerate(zip(target_dof_pos_profile, dof_pos_profile)):
+    #     ax = axes[idx // 6, idx % 6]  # 5x6 그리드의 위치 설정
+    #     ax.set_ylim(m.jnt_range[idx + 1] * 180 / np.pi)
+    #     ax.set_xticks(np.arange(0, p.shape[0], 500),np.arange(0, p.shape[0]/500, 1))  # X축 간격 설정 ()
+    #     ax.plot(p * 180 / np.pi, label='Actual')
+    #     ax.plot(target_p * 180 / np.pi, label='Target')
+    #     ax.set_title(f'Joint {idx + 1}')
+    #     ax.legend()
+    # one plot for one accelerometer
+    sensor = np.array(x)
+    fig, axes = plt.subplots(2,2, figsize=(40, 40))  # 전체 크기 조정
+    # plt.subplots_adjust(hspace=0.4, wspace=0.3)  # 서브플롯 간 간격 조정
+    ax = axes[0,0]  # 5x6 그리드의 위치 설정
+    ax.set_ylim([-40, 40])
+    ax.set_xticks(np.arange(0, sensor.shape[0], 500),np.arange(0, sensor.shape[0]/500, 1))  # X축 간격 설정 ()
+    ax.plot(sensor, label='Acc')
+    ax.legend()
     plt.tight_layout()  # 자동 레이아웃 조정
-    plt.savefig("mujoco_plot")
+    plt.savefig("sensor_plot")
+    
+    # fig, axes = plt.subplots(5, 6, figsize=(40, 30))  # 전체 크기 조정
+    # plt.subplots_adjust(hspace=0.4, wspace=0.3)  # 서브플롯 간 간격 조정
+
+    # for idx, (tau) in enumerate(torque_profile):
+    #     ax = axes[idx // 6, idx % 6]  # 5x6 그리드의 위치 설정
+    #     # ax.set_ylim(m.jnt_range[idx + 1] * 180 / np.pi)
+    #     ax.set_xticks(np.arange(0, p.shape[0], 500),np.arange(0, p.shape[0]/500, 1))  # X축 간격 설정 ()
+    #     ax.plot(tau, label='Torque')
+    #     ax.set_title(f'Joint {idx + 1}')
+    #     ax.legend()
+
+    # plt.tight_layout()  # 자동 레이아웃 조정
+    # plt.savefig("torque_plot")
+
     # plt.show()
             
